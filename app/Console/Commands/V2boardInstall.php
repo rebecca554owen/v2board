@@ -58,7 +58,7 @@ class V2boardInstall extends Command
             }
             $this->saveToEnv([
                 'APP_KEY' => 'base64:' . base64_encode(Encrypter::generateKey('AES-256-CBC')),
-                'DB_HOST' => $this->ask('请输入数据库地址（默认:localhost）', 'localhost'),
+                'DB_HOST' => $this->ask('请输入数据库地址（默认:127.0.0.1', '127.0.0.1'),
                 'DB_DATABASE' => $this->ask('请输入数据库名'),
                 'DB_USERNAME' => $this->ask('请输入数据库用户名'),
                 'DB_PASSWORD' => $this->ask('请输入数据库密码')
@@ -67,8 +67,52 @@ class V2boardInstall extends Command
             \Artisan::call('config:cache');
             try {
                 DB::connection()->getPdo();
+                // 添加检查数据库是否已有数据
+                if (!blank(DB::select('SHOW TABLES'))) {
+                    if ($this->confirm('检测到数据库中已经存在数据，是否要清空数据库以便安装新的数据？')) {
+                        $this->info('正在清空数据库请稍等...');
+                        DB::statement('SET FOREIGN_KEY_CHECKS=0;');
+                        $tables = DB::select('SHOW TABLES');
+                        foreach ($tables as $table) {
+                            $tableName = reset($table);
+                            DB::statement("DROP TABLE IF EXISTS $tableName");
+                        }
+                        DB::statement('SET FOREIGN_KEY_CHECKS=1;');
+                        $this->info('数据库清空完成');
+                    }
+                }
             } catch (\Exception $e) {
                 abort(500, '数据库连接失败');
+            }
+
+            // 添加Redis配置
+            $enableRedis = $this->confirm('是否要配置Redis？', true);
+            if ($enableRedis) {
+                $isRedisValid = false;
+                while (!$isRedisValid) {
+                    $redisConfig = [
+                        'REDIS_HOST' => $this->ask('请输入Redis地址（默认:127.0.0.1）', '127.0.0.1'),
+                        'REDIS_PORT' => $this->ask('请输入Redis端口（默认:6379）', '6379'),
+                        'REDIS_PASSWORD' => $this->ask('请输入Redis密码（没有密码请留空）', '')
+                    ];
+                    
+                    try {
+                        $redis = new \Illuminate\Redis\RedisManager(app(), 'phpredis', [
+                            'client' => 'phpredis',
+                            'default' => [
+                                'host' => $redisConfig['REDIS_HOST'],
+                                'password' => $redisConfig['REDIS_PASSWORD'],
+                                'port' => $redisConfig['REDIS_PORT'],
+                            ],
+                        ]);
+                        $redis->ping();
+                        $isRedisValid = true;
+                        $this->saveToEnv($redisConfig);
+                    } catch (\Exception $e) {
+                        $this->error("Redis连接失败: " . $e->getMessage());
+                        $this->info("请重新输入Redis配置");
+                    }
+                }
             }
             $file = \File::get(base_path() . '/database/install.sql');
             if (!$file) {
@@ -123,33 +167,31 @@ class V2boardInstall extends Command
 
     private function saveToEnv($data = [])
     {
-        function set_env_var($key, $value)
-        {
-            if (! is_bool(strpos($value, ' '))) {
-                $value = '"' . $value . '"';
-            }
-            $key = strtoupper($key);
-
-            $envPath = app()->environmentFilePath();
-            $contents = file_get_contents($envPath);
-
-            preg_match("/^{$key}=[^\r\n]*/m", $contents, $matches);
-
-            $oldValue = count($matches) ? $matches[0] : '';
-
-            if ($oldValue) {
-                $contents = str_replace("{$oldValue}", "{$key}={$value}", $contents);
-            } else {
-                $contents = $contents . "\n{$key}={$value}\n";
-            }
-
-            $file = fopen($envPath, 'w');
-            fwrite($file, $contents);
-            return fclose($file);
-        }
         foreach($data as $key => $value) {
-            set_env_var($key, $value);
+            $this->set_env_var($key, $value);
         }
         return true;
+    }
+
+    private function set_env_var($key, $value)
+    {
+        if (strpos($value, ' ') !== false) {
+            $value = '"' . $value . '"';
+        }
+        $key = strtoupper($key);
+
+        $envPath = app()->environmentFilePath();
+        $contents = file_get_contents($envPath);
+
+        $pattern = "/^{$key}=[^\r\n]*/m";
+        if (preg_match($pattern, $contents, $matches)) {
+            $contents = preg_replace($pattern, "{$key}={$value}", $contents);
+        } else {
+            $contents .= "\n{$key}={$value}\n";
+        }
+
+        $file = fopen($envPath, 'w');
+        fwrite($file, $contents);
+        return fclose($file);
     }
 }

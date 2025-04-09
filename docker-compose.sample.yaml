@@ -1,0 +1,9 @@
+services:
+  v2board:
+    image: ghcr.io/rebecca554owen/v2board:dev
+    volumes:
+      - ./:/www/
+    network_mode: host #默认使用Host模式，需要Bridge模式自己注释掉
+    restart: always
+    # ports:
+    #   - 9000:9000
